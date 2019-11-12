@@ -20,25 +20,25 @@ last = wdir + 'last.pt'
 best = wdir + 'best.pt'
 results_file = 'results.txt'
 
-# Hyperparameters (k-series, 53.3 mAP yolov3-spp-320) https://github.com/ultralytics/yolov3/issues/310
-hyp = {'giou': 3.31,  # giou loss gain
-       'cls': 42.4,  # cls loss gain
-       'cls_pw': 1.0,  # cls BCELoss positive_weight
-       'obj': 40.0,  # obj loss gain (*=img_size/320 * 1.1 if img_size > 320)
-       'obj_pw': 1.0,  # obj BCELoss positive_weight
-       'iou_t': 0.213,  # iou training threshold
-       'lr0': 0.00261,  # initial learning rate (SGD=1E-3, Adam=9E-5)
+# Hyperparameters (j-series, 50.5 mAP yolov3-320) evolved by @ktian08 https://github.com/ultralytics/yolov3/issues/310
+hyp = {'giou': 1.582,  # giou loss gain
+       'cls': 27.76,  # cls loss gain  (CE=~1.0, uCE=~20)
+       'cls_pw': 1.446,  # cls BCELoss positive_weight
+       'obj': 21.35,  # obj loss gain (*=80 for uBCE with 80 classes)
+       'obj_pw': 3.941,  # obj BCELoss positive_weight
+       'iou_t': 0.2635,  # iou training threshold
+       'lr0': 0.002324,  # initial learning rate (SGD=1E-3, Adam=9E-5)
        'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
-       'momentum': 0.949,  # SGD momentum
-       'weight_decay': 0.000489,  # optimizer weight decay
+       'momentum': 0.97,  # SGD momentum
+       'weight_decay': 0.0004569,  # optimizer weight decay
        'fl_gamma': 0.5,  # focal loss gamma
-       'hsv_h': 0.0103,  # image HSV-Hue augmentation (fraction)
-       'hsv_s': 0.691,  # image HSV-Saturation augmentation (fraction)
-       'hsv_v': 0.433,  # image HSV-Value augmentation (fraction)
-       'degrees': 1.43,  # image rotation (+/- deg)
-       'translate': 0.0663,  # image translation (+/- fraction)
-       'scale': 0.11,  # image scale (+/- gain)
-       'shear': 0.384}  # image shear (+/- deg)
+       'hsv_h': 0.01,  # image HSV-Hue augmentation (fraction)
+       'hsv_s': 0.5703,  # image HSV-Saturation augmentation (fraction)
+       'hsv_v': 0.3174,  # image HSV-Value augmentation (fraction)
+       'degrees': 1.113,  # image rotation (+/- deg)
+       'translate': 0.06797,  # image translation (+/- fraction)
+       'scale': 0.1059,  # image scale (+/- gain)
+       'shear': 0.5768}  # image shear (+/- deg)
 
 # Overwrite hyp with hyp*.txt (optional)
 f = glob.glob('hyp*.txt')
@@ -364,10 +364,9 @@ def train():
         # end epoch ----------------------------------------------------------------------------------------------------
 
     # end training
-    if len(opt.name) and not opt.prebias:
+    if len(opt.name):
         os.rename('results.txt', 'results_%s.txt' % opt.name)
-        os.rename(wdir + 'last.pt', wdir + 'last_%s.pt' % opt.name)
-        os.rename(wdir + 'best.pt', wdir + 'best_%s.pt' % opt.name) if os.path.exists(wdir + 'best.pt') else None
+        os.rename(wdir + 'best.pt', wdir + 'best_%s.pt' % opt.name)
     plot_results()  # save as results.png
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
     dist.destroy_process_group() if torch.cuda.device_count() > 1 else None
@@ -395,7 +394,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=32)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=2, help='batches to accumulate before optimizing')
     parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/coco.data', help='*.data file path')
+    parser.add_argument('--data', type=str, default='data/household.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
@@ -403,24 +402,21 @@ if __name__ == '__main__':
     parser.add_argument('--transfer', action='store_true', help='transfer learning')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
-    parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
-    parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
-    parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
-    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights', help='initial weights')
+    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.pt', help='initial weights')
     parser.add_argument('--arc', type=str, default='default', help='yolo architecture')  # defaultpw, uCE, uBCE
     parser.add_argument('--prebias', action='store_true', help='transfer-learn yolo biases prior to training')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
+    parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
+    parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
+    parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision)
-
-    # scale hyp['obj'] by img_size (evolved at 320)
-    hyp['obj'] *= opt.img_size / 320.
 
     tb_writer = None
     if not opt.evolve:  # Train normally
