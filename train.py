@@ -410,6 +410,8 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
+    parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
+    parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
