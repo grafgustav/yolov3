@@ -474,7 +474,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         imgs, label, path, hw = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
-        return (torch.stack(imgs[:][0], 0), torch.stack(imgs[:][1], 0)), torch.cat(label, 0), path, hw
+        # original: return torch.stack(img, 0), torch.cat(label, 0), path, hw -> (tensor(bs, 3, 320, 416), ...)
+        return (torch.stack(list(map(lambda img: img[0], imgs)), 0), torch.stack(list(map(lambda img: img[1], imgs)), 0)), torch.cat(label, 0), path, hw
 
 
 def load_image(self, index):
