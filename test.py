@@ -10,34 +10,31 @@ from utils.utils import *
 
 def test(cfg,
          data,
-         weights=None,
+         weights_rgb=None,
+         weights_d=None,
          batch_size=16,
          img_size=416,
          iou_thres=0.5,
          conf_thres=0.001,
          nms_thres=0.5,
          save_json=False,
-         model=None):
+         model_rgb=None,
+         model_d=None):
     # Initialize/load model and set device
-    if model is None:
+    if model_rgb is None and model_d is None:
         device = torch_utils.select_device(opt.device)
         verbose = True
 
         # Initialize model
-        model = Darknet(cfg, img_size).to(device)
+        model_rgb = Darknet(cfg, img_size).to(device)
+        model_d = Darknet(cfg, img_size).to(device)
 
         # Load weights
-        attempt_download(weights)
-        if weights.endswith('.pt'):  # pytorch format
-            model.load_state_dict(torch.load(weights, map_location=device)['model'])
-        else:  # darknet format
-            _ = load_darknet_weights(model, weights)
-
-        if torch.cuda.device_count() > 1:
-            model = nn.DataParallel(model)
+        # attempt_download(weights)
+        model_rgb.load_state_dict(torch.load(weights_rgb, map_location=device)['model'])
+        model_d.load_state_dict(torch.load(weights_d, map_location=device)['model'])
     else:
-        device = next(model.parameters()).device  # get model device
-        verbose = False
+        return -1
 
     # Configure run
     data = parse_data_cfg(data)
@@ -46,6 +43,7 @@ def test(cfg,
     names = load_classes(data['names'])  # class names
 
     # Dataloader
+    # TODO: Dataloader needs to return tuple of (rgb_img, d_img)
     dataset = LoadImagesAndLabels(test_path, img_size, batch_size)
     dataloader = DataLoader(dataset,
                             batch_size=batch_size,
@@ -54,30 +52,34 @@ def test(cfg,
                             collate_fn=dataset.collate_fn)
 
     seen = 0
-    model.eval()
+    model_rgb.eval()
+    model_d.eval()
     coco91class = coco80_to_coco91_class()
     s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.5', 'F1')
     p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3)
     jdict, stats, ap, ap_class = [], [], [], []
-    for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+    for batch_i, stuff in enumerate(tqdm(dataloader, desc=s)):
+        imgs, targets, paths, shapes = stuff
         targets = targets.to(device)
-        imgs = imgs.to(device)
-        _, _, height, width = imgs.shape  # batch size, channels, height, width
+        img_rgb = imgs[0].to(device)
+        img_d = imgs[1].to(device)
+        _, _, height, width = img_rgb.shape  # batch size, channels, height, width
 
         # Plot images with bounding boxes
-        if batch_i == 0 and not os.path.exists('test_batch0.jpg'):
-            plot_images(imgs=imgs, targets=targets, paths=paths, fname='test_batch0.jpg')
+        # TODO: Modify for nicer output right
+        if batch_i == 0 and not os.path.exists('test_batch_merging.jpg'):
+            plot_images(imgs=img_rgb, targets=targets, paths=paths, fname='test_batch_merging_rgb.jpg')
+            plot_images(imgs=img_d, targets=targets, paths=paths, fname='test_batch_merging_d.jpg')
 
         # Run model
-        inf_out, train_out = model(imgs)  # inference and training outputs
-
-        # Compute loss
-        if hasattr(model, 'hyp'):  # if model has loss hyperparameters
-            loss += compute_loss(train_out, targets, model)[1][:3].cpu()  # GIoU, obj, cls
+        inf_rgb_out, train_rgb_out = model_rgb(img_rgb)  # inference and training outputs
+        inf_d_out, train_d_out = model_d(img_d)  # inference and training outputs
 
         # Run NMS
-        output = non_max_suppression(inf_out, conf_thres=conf_thres, nms_thres=nms_thres)
+        # TODO: Concatenate infs to appropriate shape IN: (bs, 8190, 12) -> OUT: [(#pred, 7)]
+        inf_concat = torch.cat((inf_rgb_out, inf_d_out), dim=1)
+        output = non_max_suppression(inf_concat, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # Statistics per image
         for si, pred in enumerate(output):
@@ -197,9 +199,10 @@ def test(cfg,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
     parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/coco.data', help='coco.data file path')
-    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights', help='path to weights file')
-    parser.add_argument('--batch-size', type=int, default=16, help='size of each image batch')
+    parser.add_argument('--data', type=str, default='data/household.data', help='coco.data file path')
+    parser.add_argument('--weights-rgb', type=str, default='weights/best_color.pt', help='path to weights file')
+    parser.add_argument('--weights-d', type=str, default='weights/best_depth.pt', help='path to weights file')
+    parser.add_argument('--batch-size', type=int, default=2, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold required to qualify as detected')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
@@ -212,7 +215,8 @@ if __name__ == '__main__':
     with torch.no_grad():
         test(opt.cfg,
              opt.data,
-             opt.weights,
+             opt.weights_rgb,
+             opt.weights_d,
              opt.batch_size,
              opt.img_size,
              opt.iou_thres,

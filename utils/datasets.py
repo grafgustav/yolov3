@@ -418,14 +418,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         else:
             # Load image
-            img = load_image(self, index)
+            img_rgb, img_d = load_images(self, index)
 
             # Letterbox
-            h, w = img.shape[:2]
+            h, w = img_rgb.shape[:2]
             if self.rect:
-                img, ratio, padw, padh = letterbox(img, self.batch_shapes[self.batch[index]], mode='rect')
+                img_rgb, ratio, padw, padh = letterbox(img_rgb, self.batch_shapes[self.batch[index]], mode='rect')
+                img_d, _, _, _ = letterbox(img_d, self.batch_shapes[self.batch[index]], mode='rect')
             else:
-                img, ratio, padw, padh = letterbox(img, self.img_size, mode='square')
+                img_rgb, ratio, padw, padh = letterbox(img_rgb, self.img_size, mode='square')
+                img_d, _, _, _ = letterbox(img_d, self.img_size, mode='square')
 
             # Load labels
             labels = []
@@ -443,64 +445,36 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 3] = ratio[0] * w * (x[:, 1] + x[:, 3] / 2) + padw
                     labels[:, 4] = ratio[1] * h * (x[:, 2] + x[:, 4] / 2) + padh
 
-        if self.augment:
-            # Augment colorspace
-            augment_hsv(img, hgain=self.hyp['hsv_h'], sgain=self.hyp['hsv_s'], vgain=self.hyp['hsv_v'])
-
-            # Augment imagespace
-            g = 0.0 if mosaic else 1.0  # do not augment mosaics
-            hyp = self.hyp
-            img, labels = random_affine(img, labels,
-                                        degrees=hyp['degrees'] * g,
-                                        translate=hyp['translate'] * g,
-                                        scale=hyp['scale'] * g,
-                                        shear=hyp['shear'] * g)
-
-            # Apply cutouts
-            # if random.random() < 0.9:
-            #     labels = cutout(img, labels)
-
         nL = len(labels)  # number of labels
         if nL:
             # convert xyxy to xywh
             labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
 
             # Normalize coordinates 0 - 1
-            labels[:, [2, 4]] /= img.shape[0]  # height
-            labels[:, [1, 3]] /= img.shape[1]  # width
-
-        if self.augment:
-            # random left-right flip
-            lr_flip = True
-            if lr_flip and random.random() < 0.5:
-                img = np.fliplr(img)
-                if nL:
-                    labels[:, 1] = 1 - labels[:, 1]
-
-            # random up-down flip
-            ud_flip = False
-            if ud_flip and random.random() < 0.5:
-                img = np.flipud(img)
-                if nL:
-                    labels[:, 2] = 1 - labels[:, 2]
+            labels[:, [2, 4]] /= img_rgb.shape[0]  # height
+            labels[:, [1, 3]] /= img_rgb.shape[1]  # width
 
         labels_out = torch.zeros((nL, 6))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
 
         # Normalize
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-        img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        img_rgb = img_rgb[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img_rgb = np.ascontiguousarray(img_rgb, dtype=np.float32)  # uint8 to float32
+        img_rgb /= 255.0  # 0 - 255 to 0.0 - 1.0
+        # Normalize
+        img_d = img_d[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img_d = np.ascontiguousarray(img_d, dtype=np.float32)  # uint8 to float32
+        img_d /= 255.0  # 0 - 255 to 0.0 - 1.0
 
-        return torch.from_numpy(img), labels_out, img_path, (h, w)
+        return (torch.from_numpy(img_rgb), torch.from_numpy(img_d)), labels_out, img_path, (h, w)
 
     @staticmethod
     def collate_fn(batch):
-        img, label, path, hw = list(zip(*batch))  # transposed
+        imgs, label, path, hw = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
-        return torch.stack(img, 0), torch.cat(label, 0), path, hw
+        return (torch.stack(imgs[:][0], 0), torch.stack(imgs[:][1], 0)), torch.cat(label, 0), path, hw
 
 
 def load_image(self, index):
@@ -515,6 +489,19 @@ def load_image(self, index):
             h, w = img.shape[:2]
             img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # _LINEAR fastest
     return img
+
+
+def load_images(self, index):
+    # loads 2 image from dataset, one from rg, other from depth
+    img_rgb = self.imgs[index]
+    img_d = self.imgs[index]
+    if img_rgb is None and img_d is None:
+        img_path = self.img_files[index]
+        img_rgb = cv2.imread(img_path)  # BGR
+        img_d = cv2.imread(img_path.replace("/color/", "/rgb-depth/"))  # BGR
+        assert img_rgb is not None, 'Image Not Found ' + img_path
+        assert img_d is not None, 'Image Not Found ' + img_path
+    return img_rgb, img_d
 
 
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
