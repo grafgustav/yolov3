@@ -78,8 +78,11 @@ def test(cfg,
 
         # Run NMS
         # TODO: Concatenate infs to appropriate shape IN: (bs, 8190, 12) -> OUT: [(#pred, 7)]
-        inf_concat = torch.cat((inf_rgb_out, inf_d_out), dim=1)
-        output = non_max_suppression(inf_concat, conf_thres=conf_thres, nms_thres=nms_thres)
+        # Targets: tensor([[batch_i, cls, x, y, w, h]])
+        out1 = non_max_suppression(inf_rgb_out, conf_thres=conf_thres, nms_thres=nms_thres)
+        out2 = non_max_suppression(inf_d_out, conf_thres=conf_thres, nms_thres=nms_thres)
+        out_concat = [torch.cat((out1[i], out2[i]), dim=0) for i in range(batch_size)]
+        output = custom_non_max_suppression(out_concat, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # Statistics per image
         for si, pred in enumerate(output):

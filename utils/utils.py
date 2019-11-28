@@ -552,7 +552,89 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
             det_max = torch.cat(det_max)  # concatenate
             output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
 
-    return output
+    return output  # output: x1, y1, x2, y2, obj_conf, class_conf, class_index
+
+
+def custom_non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
+    """
+    Removes detections with lower object confidence score than 'conf_thres'
+    Non-Maximum Suppression to further filter detections.
+    Returns detections with shape:
+        (x1, y1, x2, y2, object_conf, class_conf, class)
+    """
+
+    min_wh = 2  # (pixels) minimum box width and height
+
+    output = [None] * len(prediction)
+    for image_i, pred in enumerate(prediction):
+        # pred here means: (x,y,x,y,obj_conf,cls_conf,cls_ind)
+        # Multiply conf by class conf to get combined confidence
+        class_conf = pred[:, 5]
+        pred[:, 4] *= class_conf
+
+        # If none are remaining => process next image
+        if len(pred) == 0:
+            continue
+
+        # Get detections sorted by decreasing confidence scores
+        pred = pred[(-pred[:, 4]).argsort()]
+
+        det_max = []
+        nms_style = 'MERGE'  # 'OR' (default), 'AND', 'MERGE' (experimental)
+        for c in pred[:, -1].unique():
+            dc = pred[pred[:, -1] == c]  # select class c
+            n = len(dc)
+            if n == 1:
+                det_max.append(dc)  # No NMS required if only 1 prediction
+                continue
+            elif n > 100:
+                dc = dc[:100]  # limit to first 100 boxes: https://github.com/ultralytics/yolov3/issues/117
+
+            # Non-maximum suppression
+            if nms_style == 'OR':
+                # METHOD2
+                while dc.shape[0]:
+                    det_max.append(dc[:1])  # save highest conf detection
+                    if len(dc) == 1:  # Stop if we're at the last detection
+                        break
+                    iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                    dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+
+            elif nms_style == 'AND':  # requires overlap, single boxes erased
+                while len(dc) > 1:
+                    iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                    if iou.max() > 0.5:
+                        det_max.append(dc[:1])
+                    dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+
+            elif nms_style == 'MERGE':  # weighted mixture box
+                while len(dc):
+                    if len(dc) == 1:
+                        det_max.append(dc)
+                        break
+                    i = bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes
+                    weights = dc[i, 4:5]
+                    dc[0, :4] = (weights * dc[i, :4]).sum(0) / weights.sum()
+                    det_max.append(dc[:1])
+                    dc = dc[i == 0]
+
+            elif nms_style == 'SOFT':  # soft-NMS https://arxiv.org/abs/1704.04503
+                sigma = 0.5  # soft-nms sigma parameter
+                while len(dc):
+                    if len(dc) == 1:
+                        det_max.append(dc)
+                        break
+                    det_max.append(dc[:1])
+                    iou = bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                    dc = dc[1:]
+                    dc[:, 4] *= torch.exp(-iou ** 2 / sigma)  # decay confidences
+                    # dc = dc[dc[:, 4] > nms_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
+
+        if len(det_max):
+            det_max = torch.cat(det_max)  # concatenate
+            output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
+
+    return output  # output: x1, y1, x2, y2, obj_conf, class_conf, class_index
 
 
 def get_yolo_layers(model):
