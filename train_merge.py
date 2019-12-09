@@ -115,12 +115,13 @@ def train():
         # Process epoch results
         if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
             with torch.no_grad():
-                # TODO: Rewrite test class properly
                 results, maps = test_merge(cfg,
                                           data,
                                           batch_size=batch_size,
                                           img_size=opt.img_size,
-                                          model=model_merge,
+                                        model_rgb=model_rgb,
+                                           model_d=model_d,
+                                          model_merge=model_merge,
                                           conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
                                           save_json=final_epoch and epoch > 0 and 'coco.data' in data)
 
@@ -128,6 +129,44 @@ def train():
         results_file = 'results_merge.txt'
         with open(results_file, 'a') as f:
             f.write(s + '%10.3g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
+
+        # Update best mAP
+        fitness = sum(results[4:])  # total loss
+        if fitness < best_fitness:
+            best_fitness = fitness
+
+        # Save training results
+        save = (not opt.nosave) or (final_epoch and not opt.evolve) or opt.prebias
+        if save:
+            with open(results_file, 'r') as f:
+                # Create checkpoint
+                chkpt = {'epoch': epoch,
+                         'best_fitness': best_fitness,
+                         'training_results': f.read(),
+                         'model': model_merge.module.state_dict() if type(
+                             model_merge) is nn.parallel.DistributedDataParallel else model_merge.state_dict(),
+                         'optimizer': None if final_epoch else optimizer.state_dict()}
+
+            # Save last checkpoint
+            last = 'weights/last_merge.pt'
+            best = 'weights/best_merge.pt'
+            torch.save(chkpt, last)
+            if opt.bucket and not opt.prebias:
+                os.system('gsutil cp %s gs://%s' % (last, opt.bucket))  # upload to bucket
+
+            # Save best checkpoint
+            if best_fitness == fitness:
+                torch.save(chkpt, best)
+
+            # Save backup every 10 epochs (optional)
+            if epoch > 0 and epoch % 10 == 0:
+                torch.save(chkpt, "weights/" + 'backup%g.pt' % epoch)
+
+            # Delete checkpoint
+            del chkpt
+
+        # end epoch ----------------------------------------------------------------------------------------------------
+
 
 
 if __name__ == '__main__':
