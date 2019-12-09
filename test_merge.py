@@ -4,35 +4,40 @@ import json
 from torch.utils.data import DataLoader
 
 from models import *
+from merge_model import MergeModel
 from utils.datasets import *
 from utils.utils import *
 
 
-def test(cfg,
-         data,
-         weights_rgb=None,
-         weights_d=None,
-         batch_size=16,
-         img_size=416,
-         iou_thres=0.5,
-         conf_thres=0.001,
-         nms_thres=0.5,
-         save_json=False,
-         model_rgb=None,
-         model_d=None):
+def test_merge(cfg,
+                data,
+                weights_rgb=None,
+                weights_d=None,
+                weights_merge=None,
+                batch_size=16,
+                img_size=416,
+                iou_thres=0.5,
+                conf_thres=0.001,
+                nms_thres=0.5,
+                save_json=False,
+                model_rgb=None,
+                model_d=None,
+                model_merge=None):
     # Initialize/load model and set device
-    if model_rgb is None and model_d is None:
+    if model_rgb is None and model_d is None and model_merge is None:
         device = torch_utils.select_device(opt.device)
         verbose = True
 
         # Initialize model
         model_rgb = Darknet(cfg, img_size).to(device)
         model_d = Darknet(cfg, img_size).to(device)
+        model_merge = MergeModel().to(device)
 
         # Load weights
         # attempt_download(weights)
         model_rgb.load_state_dict(torch.load(weights_rgb, map_location=device)['model'])
         model_d.load_state_dict(torch.load(weights_d, map_location=device)['model'])
+        model_merge.load_state_dict(torch.load(weights_merge, map_location=device)['model'])
     else:
         return -1
 
@@ -53,7 +58,6 @@ def test(cfg,
     seen = 0
     model_rgb.eval()
     model_d.eval()
-    coco91class = coco80_to_coco91_class()
     s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.5', 'F1')
     p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3)
@@ -65,23 +69,15 @@ def test(cfg,
         img_d = imgs[1].to(device)
         _, _, height, width = img_rgb.shape  # batch size, channels, height, width
 
-        # Plot images with bounding boxes
-        # TODO: Modify for nicer output right
-        if batch_i == 0 and not os.path.exists('test_batch_merging.jpg'):
-            plot_images(imgs=img_rgb, targets=targets, paths=paths, fname='test_batch_merging_rgb.jpg')
-            plot_images(imgs=img_d, targets=targets, paths=paths, fname='test_batch_merging_d.jpg')
-
         # Run model
         inf_rgb_out, train_rgb_out = model_rgb(img_rgb)  # inference and training outputs
         inf_d_out, train_d_out = model_d(img_d)  # inference and training outputs
 
+        pred, _ = model_merge(inf_rgb_out, inf_d_out)
+
         # Run NMS
-        # TODO: Concatenate infs to appropriate shape IN: (bs, 8190, 12) -> OUT: [(#pred, 7)]
         # Targets: tensor([[batch_i, cls, x, y, w, h]])
-        out1 = non_max_suppression(inf_rgb_out, conf_thres=conf_thres, nms_thres=nms_thres)
-        out2 = non_max_suppression(inf_d_out, conf_thres=conf_thres, nms_thres=nms_thres)
-        out_concat = [torch.cat((out1[i], out2[i]), dim=0) for i in range(batch_size)]
-        output = custom_non_max_suppression(out_concat, conf_thres=conf_thres, nms_thres=nms_thres)
+        output = custom_non_max_suppression(pred, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # Statistics per image
         for si, pred in enumerate(output):
@@ -94,24 +90,6 @@ def test(cfg,
                 if nl:
                     stats.append(([], torch.Tensor(), torch.Tensor(), tcls))
                 continue
-
-            # Append to text file
-            # with open('test.txt', 'a') as file:
-            #    [file.write('%11.5g' * 7 % tuple(x) + '\n') for x in pred]
-
-            # Append to pycocotools JSON dictionary
-            if save_json:
-                # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
-                image_id = int(Path(paths[si]).stem.split('_')[-1])
-                box = pred[:, :4].clone()  # xyxy
-                scale_coords(imgs[si].shape[1:], box, shapes[si])  # to original shape
-                box = xyxy2xywh(box)  # xywh
-                box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
-                for di, d in enumerate(pred):
-                    jdict.append({'image_id': image_id,
-                                  'category_id': coco91class[int(d[6])],
-                                  'bbox': [floatn(x, 3) for x in box[di]],
-                                  'score': floatn(d[4], 5)})
 
             # Clip boxes to image bounds
             clip_coords(pred, (height, width))
@@ -168,29 +146,6 @@ def test(cfg,
         for i, c in enumerate(ap_class):
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap[i], f1[i]))
 
-    # Save JSON
-    if save_json and map and len(jdict):
-        try:
-            imgIds = [int(Path(x).stem.split('_')[-1]) for x in dataset.img_files]
-            with open('results.json', 'w') as file:
-                json.dump(jdict, file)
-
-            from pycocotools.coco import COCO
-            from pycocotools.cocoeval import COCOeval
-
-            # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
-            cocoGt = COCO('../coco/annotations/instances_val2014.json')  # initialize COCO ground truth api
-            cocoDt = cocoGt.loadRes('results.json')  # initialize COCO pred api
-
-            cocoEval = COCOeval(cocoGt, cocoDt, 'bbox')
-            cocoEval.params.imgIds = imgIds  # [:32]  # only evaluate these images
-            cocoEval.evaluate()
-            cocoEval.accumulate()
-            cocoEval.summarize()
-            map = cocoEval.stats[1]  # update mAP to pycocotools mAP
-        except:
-            print('WARNING: missing dependency pycocotools from requirements.txt. Can not compute official COCO mAP.')
-
     # Return results
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
@@ -215,7 +170,7 @@ if __name__ == '__main__':
     print(opt)
 
     with torch.no_grad():
-        test(opt.cfg,
+        test_merge(opt.cfg,
              opt.data,
              opt.weights_rgb,
              opt.weights_d,
