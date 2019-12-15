@@ -54,7 +54,8 @@ def test_merge(cfg,
                             batch_size=batch_size,
                             num_workers=min([os.cpu_count(), batch_size, 16]),
                             pin_memory=True,
-                            collate_fn=dataset.collate_fn)
+                            collate_fn=dataset.collate_fn,
+                            drop_last=True)
 
     seen = 0
     model_rgb.eval()
