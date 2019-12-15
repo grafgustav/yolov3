@@ -306,6 +306,32 @@ class FocalLoss(nn.Module):
             return loss
 
 
+def compute_custom_loss(preds, targets):
+    # needed: two loss functions
+    # 1st for classification
+    # 2nd for regression localization
+    BCEcls = nn.BCEWithLogitsLoss()
+
+    batch_size = preds.shape[0]
+    losses = torch.Tensor([0])
+    lobj = torch.Tensor([0])
+    lcls = torch.Tensor([0])
+    for i in range(batch_size):
+        for t in targets[[targets[:, 0] == i]]:  # this is pretty much always 1 target only
+            # preds contains class confidences for all 7 classes
+            # search one box that fits the target, this one adds 1 - IoU to loss, rest adds to loss
+            for pred in preds[i]:
+                lobj += (1 - pred[4] * bbox_iou(pred, t[2:], GIoU=True, x1y1x2y2=False))
+
+                tar = torch.zeros_like(pred[5:])  # targets
+                tar[t[1].long()] = 1.0
+                lcls += BCEcls(pred[5:], tar)  # BCE
+    loss_items = [lcls, lobj]
+    losses += lobj
+    losses += lcls
+    return losses, loss_items
+
+
 def compute_loss(p, targets, model):  # predictions, targets, model
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
@@ -484,7 +510,8 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
         # pred[:, 4] *= class_conf  # improves mAP from 0.549 to 0.551
 
         # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
-        pred = torch.cat((pred[:, :5], class_conf.unsqueeze(1), class_pred), 1)
+        # pred = torch.cat((pred[:, :5], class_conf.unsqueeze(1), class_pred), 1)
+        pred = torch.cat((pred, class_pred), 1)
 
         # Get detections sorted by decreasing confidence scores
         pred = pred[(-pred[:, 4]).argsort()]
@@ -552,7 +579,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
             det_max = torch.cat(det_max)  # concatenate
             output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
 
-    return output  # output: x1, y1, x2, y2, obj_conf, class_conf, class_index
+    return output  # output: x1, y1, x2, y2, obj_conf, 7*class_conf
 
 
 def custom_non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):

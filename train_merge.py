@@ -10,6 +10,26 @@ import argparse
 from test_merge import test_merge
 
 
+hyp = {'giou': 1.582,  # giou loss gain
+       'cls': 27.76,  # cls loss gain  (CE=~1.0, uCE=~20)
+       'cls_pw': 1.446,  # cls BCELoss positive_weight
+       'obj': 21.35,  # obj loss gain (*=80 for uBCE with 80 classes)
+       'obj_pw': 3.941,  # obj BCELoss positive_weight
+       'iou_t': 0.2635,  # iou training threshold
+       'lr0': 0.002324,  # initial learning rate (SGD=1E-3, Adam=9E-5)
+       'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
+       'momentum': 0.97,  # SGD momentum
+       'weight_decay': 0.0004569,  # optimizer weight decay
+       'fl_gamma': 0.5,  # focal loss gamma
+       'hsv_h': 0.01,  # image HSV-Hue augmentation (fraction)
+       'hsv_s': 0.5703,  # image HSV-Saturation augmentation (fraction)
+       'hsv_v': 0.3174,  # image HSV-Value augmentation (fraction)
+       'degrees': 1.113,  # image rotation (+/- deg)
+       'translate': 0.06797,  # image translation (+/- fraction)
+       'scale': 0.1059,  # image scale (+/- gain)
+       'shear': 0.5768}  # image shear (+/- deg)
+
+
 def train():
     cfg = opt.cfg
     data = opt.data
@@ -18,6 +38,7 @@ def train():
     batch_size = opt.batch_size
     weights_rgb = opt.weights_rgb  # initial training weights
     weights_d = opt.weights_d
+    weights_merge = opt.weights_merge
     accumulate = opt.accumulate
 
     # Configure run
@@ -43,6 +64,16 @@ def train():
 
         model_rgb.eval()
         model_d.eval()
+
+        model_rgb.hyp = hyp
+        model_d.hyp = hyp
+
+        model_rgb.nc = nc
+        model_d.nc = nc
+
+        model_rgb.arc = opt.arc
+        model_d.arc = opt.arc
+
         model_merge.train()
     else:
         return -1
@@ -51,7 +82,7 @@ def train():
         optimizer = optim.Adam(model_merge.parameters(), lr=0.001)
         # optimizer = AdaBound(pg0, lr=hyp['lr0'], final_lr=0.1)
     else:
-        optimizer = optim.SGD(model_merge.parameters(), lr=0.001, momentum=0.5, nesterov=True)
+        optimizer = optim.SGD(model_rgb.parameters(), lr=0.001, momentum=0.5, nesterov=True)
 
     # init dataloader for bot datapoints
     # Dataset
@@ -68,12 +99,25 @@ def train():
                                              shuffle=True,
                                              pin_memory=True,
                                              collate_fn=dataset.collate_fn)
+
+    torch_utils.model_info(model_merge, report='summary')
+
     nb = len(dataloader)
+    results = (0, 0, 0, 0, 0, 0, 0)  # 'P', 'R', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification'
+    best_fitness = float('inf')
     # train
     for epoch in range(epochs):
 
+        mloss = torch.zeros(4).to(device)
+
+        counter = 0
+
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for i, stuff in pbar:
+            counter += 1
+            if counter >= 2:
+                break
+
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs, targets, paths, shapes = stuff
             targets = targets.to(device)
@@ -84,13 +128,48 @@ def train():
             inf_rgb_out, train_rgb_out = model_rgb(img_rgb)  # inference and training outputs
             inf_d_out, train_d_out = model_d(img_d)  # inference and training outputs
 
+            rgb_pred = non_max_suppression(inf_rgb_out)
+            d_pred = non_max_suppression(inf_d_out)
+
+            # normalize again, because somehow the predictions de-normalize stuff, no idea how
+            for pred in rgb_pred:
+                if pred is not None:
+                    pred[:, :4] /= img_size
+                    pred[:, :4] = xyxy2xywh(pred[:, :4])
+
+            for pred in d_pred:
+                if pred is not None:
+                    pred[:, :4] /= img_size
+                    pred[:, :4] = xyxy2xywh(pred[:, :4])
+
+            # take first 10 predictions after nms of both nets
+            # -> (bs, 20, 12)
             # feed predictions into own net
-            pred, _ = model_merge(inf_rgb_out, inf_d_out)
+            # input: 2x [bs, Tensor([[x,y,w,h,o,c0,..c6,cls]])]
+            all_preds = [[] for _ in range(batch_size)]
+            for batch in range(batch_size):
+                prgb = rgb_pred[batch]
+                pd = d_pred[batch]
+                if prgb is not None:
+                    for j in prgb:
+                        all_preds[batch].extend(j[:-1])
+
+                if pd is not None:
+                    for j in pd:
+                        all_preds[batch].extend(j[:-1])
+
+                for _ in range(len(all_preds[batch]), 240):  # to 20 * 12
+                    all_preds[batch].append(torch.Tensor([0]))
+
+            # make tensor from this
+            all_preds = torch.Tensor(all_preds)
+
+            pred = model_merge(all_preds)
 
             # Compute loss
-            loss, loss_items = compute_loss(pred, targets, model_rgb)
+            loss, loss_items = compute_custom_loss(pred, targets)
             if not torch.isfinite(loss):
-                print('WARNING: non-finite loss, ending training ', loss_items)
+                print('WARNING: non-finite loss, ending training ')
                 return results
 
             loss.backward()
@@ -101,7 +180,7 @@ def train():
                 optimizer.zero_grad()
 
             # Print batch results
-            mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+            mloss = mloss / (i + 1)  # update mean losses
             mem = torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0  # (GB)
             s = ('%10s' * 2 + '%10.3g' * 6) % (
                 '%g/%g' % (epoch, epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
@@ -113,23 +192,24 @@ def train():
 
         final_epoch = epoch + 1 == epochs
         # Process epoch results
+        '''
         if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
             with torch.no_grad():
                 results, maps = test_merge(cfg,
-                                          data,
-                                          batch_size=batch_size,
-                                          img_size=opt.img_size,
-                                        model_rgb=model_rgb,
-                                           model_d=model_d,
-                                          model_merge=model_merge,
-                                          conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
-                                          save_json=final_epoch and epoch > 0 and 'coco.data' in data)
+                                            data,
+                                            batch_size=batch_size,
+                                            img_size=opt.img_size,
+                                            model_rgb=model_rgb,
+                                            model_d=model_d,
+                                            model_merge=model_merge,
+                                            conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
+                                            save_json=False)
+                                            '''
 
         # Write epoch results
         results_file = 'results_merge.txt'
         with open(results_file, 'a') as f:
             f.write(s + '%10.3g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
-
         # Update best mAP
         fitness = sum(results[4:])  # total loss
         if fitness < best_fitness:
@@ -168,11 +248,10 @@ def train():
         # end epoch ----------------------------------------------------------------------------------------------------
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int,
-                        default=20)  # 500200 batches at bs 16, 117263 images = 273 epochs
+                        default=1)  # 500200 batches at bs 16, 117263 images = 273 epochs
     parser.add_argument('--batch-size', type=int,
                         default=4)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=1, help='batches to accumulate before optimizing')
@@ -189,6 +268,7 @@ if __name__ == '__main__':
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
     parser.add_argument('--weights-rgb', type=str, default='weights/best_color.pt', help='initial weights')
     parser.add_argument('--weights-d', type=str, default='weights/best_depth.pt', help='initial weights')
+    parser.add_argument('--weights-merge', type=str, default='weights/best_merge.pt', help='initial weights')
     parser.add_argument('--arc', type=str, default='default', help='yolo architecture')  # defaultpw, uCE, uBCE
     parser.add_argument('--prebias', action='store_true', help='transfer-learn yolo biases prior to training')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
@@ -200,5 +280,4 @@ if __name__ == '__main__':
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
     opt = parser.parse_args()
     print(opt)
-    device = torch_utils.select_device(opt.device)
     train()

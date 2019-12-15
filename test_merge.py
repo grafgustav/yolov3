@@ -39,7 +39,8 @@ def test_merge(cfg,
         model_d.load_state_dict(torch.load(weights_d, map_location=device)['model'])
         model_merge.load_state_dict(torch.load(weights_merge, map_location=device)['model'])
     else:
-        return -1
+        device = next(model_rgb.parameters()).device
+        verbose = False
 
     # Configure run
     data = parse_data_cfg(data)
@@ -58,6 +59,7 @@ def test_merge(cfg,
     seen = 0
     model_rgb.eval()
     model_d.eval()
+    model_merge.eval()
     s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.5', 'F1')
     p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3)
@@ -73,11 +75,47 @@ def test_merge(cfg,
         inf_rgb_out, train_rgb_out = model_rgb(img_rgb)  # inference and training outputs
         inf_d_out, train_d_out = model_d(img_d)  # inference and training outputs
 
-        pred, _ = model_merge(inf_rgb_out, inf_d_out)
+        rgb_pred = non_max_suppression(inf_rgb_out)
+        d_pred = non_max_suppression(inf_d_out)
+
+        # normalize again, because somehow the predictions de-normalize stuff, no idea how
+        for pred in rgb_pred:
+            if pred is not None:
+                pred[:, :4] /= img_size
+                pred[:, :4] = xyxy2xywh(pred[:, :4])
+
+        for pred in d_pred:
+            if pred is not None:
+                pred[:, :4] /= img_size
+                pred[:, :4] = xyxy2xywh(pred[:, :4])
+
+        # take first 10 predictions after nms of both nets
+        # -> (bs, 20, 12)
+        # feed predictions into own net
+        # input: 2x [bs, Tensor([[x,y,w,h,o,c0,..c6,cls]])]
+        all_preds = [[] for _ in range(batch_size)]
+        for batch in range(batch_size):
+            prgb = rgb_pred[batch]
+            pd = d_pred[batch]
+            if prgb is not None:
+                for j in prgb:
+                    all_preds[batch].extend(j[:-1])
+
+            if pd is not None:
+                for j in pd:
+                    all_preds[batch].extend(j[:-1])
+
+            for _ in range(len(all_preds[batch]), 240):  # to 20 * 12
+                all_preds[batch].append(torch.Tensor([0]))
+
+        # make tensor from this
+        all_preds = torch.Tensor(all_preds)
+
+        pred = model_merge(all_preds)
 
         # Run NMS
         # Targets: tensor([[batch_i, cls, x, y, w, h]])
-        output = custom_non_max_suppression(pred, conf_thres=conf_thres, nms_thres=nms_thres)
+        output = non_max_suppression(pred, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # Statistics per image
         for si, pred in enumerate(output):
@@ -159,6 +197,7 @@ if __name__ == '__main__':
     parser.add_argument('--data', type=str, default='data/household.data', help='coco.data file path')
     parser.add_argument('--weights-rgb', type=str, default='weights/best_color.pt', help='path to weights file')
     parser.add_argument('--weights-d', type=str, default='weights/best_depth.pt', help='path to weights file')
+    parser.add_argument('--weights-merge', type=str, default='weights/best_merge.pt', help='path to weights file')
     parser.add_argument('--batch-size', type=int, default=16, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold required to qualify as detected')
@@ -174,6 +213,7 @@ if __name__ == '__main__':
              opt.data,
              opt.weights_rgb,
              opt.weights_d,
+             opt.weights_merge,
              opt.batch_size,
              opt.img_size,
              opt.iou_thres,
