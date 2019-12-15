@@ -306,16 +306,16 @@ class FocalLoss(nn.Module):
             return loss
 
 
-def compute_custom_loss(preds, targets):
+def compute_custom_loss(preds, targets, device):
     # needed: two loss functions
     # 1st for classification
     # 2nd for regression localization
     BCEcls = nn.BCEWithLogitsLoss()
 
     batch_size = preds.shape[0]
-    losses = torch.Tensor([0])
-    lobj = torch.Tensor([0])
-    lcls = torch.Tensor([0])
+    losses = torch.Tensor([0]).to(device)
+    lobj = torch.Tensor([0]).to(device)
+    lcls = torch.Tensor([0]).to(device)
     for i in range(batch_size):
         for t in targets[[targets[:, 0] == i]]:  # this is pretty much always 1 target only
             # preds contains class confidences for all 7 classes

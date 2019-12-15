@@ -109,7 +109,7 @@ def test_merge(cfg,
                 all_preds[batch].append(torch.Tensor([0]))
 
         # make tensor from this
-        all_preds = torch.Tensor(all_preds)
+        all_preds = torch.Tensor(all_preds).to(device)
 
         pred = model_merge(all_preds)
 

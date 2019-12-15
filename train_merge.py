@@ -38,7 +38,6 @@ def train():
     batch_size = opt.batch_size
     weights_rgb = opt.weights_rgb  # initial training weights
     weights_d = opt.weights_d
-    weights_merge = opt.weights_merge
     accumulate = opt.accumulate
 
     # Configure run
@@ -110,13 +109,8 @@ def train():
 
         mloss = torch.zeros(4).to(device)
 
-        counter = 0
-
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for i, stuff in pbar:
-            counter += 1
-            if counter >= 2:
-                break
 
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs, targets, paths, shapes = stuff
@@ -162,12 +156,12 @@ def train():
                     all_preds[batch].append(torch.Tensor([0]))
 
             # make tensor from this
-            all_preds = torch.Tensor(all_preds)
+            all_preds = torch.Tensor(all_preds).to(device)
 
             pred = model_merge(all_preds)
 
             # Compute loss
-            loss, loss_items = compute_custom_loss(pred, targets)
+            loss, loss_items = compute_custom_loss(pred, targets, device)
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ')
                 return results
@@ -192,7 +186,6 @@ def train():
 
         final_epoch = epoch + 1 == epochs
         # Process epoch results
-        '''
         if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
             with torch.no_grad():
                 results, maps = test_merge(cfg,
@@ -204,7 +197,6 @@ def train():
                                             model_merge=model_merge,
                                             conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
                                             save_json=False)
-                                            '''
 
         # Write epoch results
         results_file = 'results_merge.txt'
