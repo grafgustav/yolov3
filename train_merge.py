@@ -97,7 +97,8 @@ def train():
                                              num_workers=min([os.cpu_count(), batch_size, 16]),
                                              shuffle=True,
                                              pin_memory=True,
-                                             collate_fn=dataset.collate_fn)
+                                             collate_fn=dataset.collate_fn,
+                                             drop_last=True)
 
     torch_utils.model_info(model_merge, report='summary')
 
@@ -243,7 +244,7 @@ def train():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int,
-                        default=1)  # 500200 batches at bs 16, 117263 images = 273 epochs
+                        default=20)  # 500200 batches at bs 16, 117263 images = 273 epochs
     parser.add_argument('--batch-size', type=int,
                         default=4)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=1, help='batches to accumulate before optimizing')
