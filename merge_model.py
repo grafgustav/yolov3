@@ -21,9 +21,9 @@ class MergeModel(nn.Module):
         # input is actually expected to be (bs, 240)
         input_size = 240
         output_size = 240  # then reformat
-        self.fc1 = nn.Linear(input_size, 180)
-        self.fc2 = nn.Linear(180, 90)
-        self.fc3 = nn.Linear(90, output_size)
+        self.fc1 = nn.Linear(input_size, 320)
+        self.fc2 = nn.Linear(320, 160)
+        self.fc3 = nn.Linear(160, output_size)
 
     def forward(self, x: torch.Tensor):
         # input are the predictions of Darknet

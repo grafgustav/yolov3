@@ -111,6 +111,8 @@ def train():
         mloss = torch.zeros(4).to(device)
 
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
+
+        counter = 0
         for i, stuff in pbar:
 
             ni = i + nb * epoch  # number integrated batches (since train start)
@@ -123,8 +125,8 @@ def train():
             inf_rgb_out, train_rgb_out = model_rgb(img_rgb)  # inference and training outputs
             inf_d_out, train_d_out = model_d(img_d)  # inference and training outputs
 
-            rgb_pred = non_max_suppression(inf_rgb_out)
-            d_pred = non_max_suppression(inf_d_out)
+            rgb_pred = non_max_suppression(inf_rgb_out, conf_thres=0.001, nms_thres=0.5)
+            d_pred = non_max_suppression(inf_d_out, conf_thres=0.001, nms_thres=0.5)
 
             # normalize again, because somehow the predictions de-normalize stuff, no idea how
             for pred in rgb_pred:
@@ -143,15 +145,17 @@ def train():
             # input: 2x [bs, Tensor([[x,y,w,h,o,c0,..c6,cls]])]
             all_preds = [[] for _ in range(batch_size)]
             for batch in range(batch_size):
-                prgb = rgb_pred[batch]
-                pd = d_pred[batch]
+                prgb = rgb_pred[batch][:min(len(rgb_pred[batch]), 10)]
+                pd = d_pred[batch][:min(len(d_pred[batch]), 10)]
                 if prgb is not None:
                     for j in prgb:
                         all_preds[batch].extend(j[:-1])
+                        counter += 1
 
                 if pd is not None:
                     for j in pd:
                         all_preds[batch].extend(j[:-1])
+                        counter += 1
 
                 for _ in range(len(all_preds[batch]), 240):  # to 20 * 12
                     all_preds[batch].append(torch.Tensor([0]))
@@ -184,6 +188,8 @@ def train():
             # end batch ------------------------------------------------------------------------------------------------
 
             # Update scheduler
+
+        print('{} Predictions fed into ')
 
         final_epoch = epoch + 1 == epochs
         # Process epoch results

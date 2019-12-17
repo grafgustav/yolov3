@@ -76,8 +76,8 @@ def test_merge(cfg,
         inf_rgb_out, train_rgb_out = model_rgb(img_rgb)  # inference and training outputs
         inf_d_out, train_d_out = model_d(img_d)  # inference and training outputs
 
-        rgb_pred = non_max_suppression(inf_rgb_out)
-        d_pred = non_max_suppression(inf_d_out)
+        rgb_pred = non_max_suppression(inf_rgb_out, conf_thres=conf_thres, nms_thres=nms_thres)
+        d_pred = non_max_suppression(inf_d_out, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # normalize again, because somehow the predictions de-normalize stuff, no idea how
         for pred in rgb_pred:
@@ -96,8 +96,8 @@ def test_merge(cfg,
         # input: 2x [bs, Tensor([[x,y,w,h,o,c0,..c6,cls]])]
         all_preds = [[] for _ in range(batch_size)]
         for batch in range(batch_size):
-            prgb = rgb_pred[batch]
-            pd = d_pred[batch]
+            prgb = rgb_pred[batch][:min(len(rgb_pred[batch]), 10)]
+            pd = d_pred[batch][:min(len(d_pred[batch]), 10)]
             if prgb is not None:
                 for j in prgb:
                     all_preds[batch].extend(j[:-1])
@@ -107,7 +107,7 @@ def test_merge(cfg,
                     all_preds[batch].extend(j[:-1])
 
             for _ in range(len(all_preds[batch]), 240):  # to 20 * 12
-                all_preds[batch].append(torch.Tensor([0]))
+                all_preds[batch].append(torch.Tensor([0]).to(device))
 
         # make tensor from this
         all_preds = torch.Tensor(all_preds).to(device)
