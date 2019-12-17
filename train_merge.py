@@ -145,8 +145,10 @@ def train():
             # input: 2x [bs, Tensor([[x,y,w,h,o,c0,..c6,cls]])]
             all_preds = [[] for _ in range(batch_size)]
             for batch in range(batch_size):
-                prgb = rgb_pred[batch][:min(len(rgb_pred[batch]), 10)]
-                pd = d_pred[batch][:min(len(d_pred[batch]), 10)]
+                lpred_rgb = len(rgb_pred[batch]) if rgb_pred[batch] else 0
+                lpred_d = len(d_pred[batch]) if d_pred[batch] else 0
+                prgb = rgb_pred[batch][:min(lpred_rgb, 10)]
+                pd = d_pred[batch][:min(lpred_d, 10)]
                 if prgb is not None:
                     for j in prgb:
                         all_preds[batch].extend(j[:-1])
